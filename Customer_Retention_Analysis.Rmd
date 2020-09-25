@@ -1,0 +1,180 @@
+---
+output:
+  word_document: default
+  pdf_document: default
+  html_document: default
+---
+
+
+```{r}
+library(h2o)
+library(data.table)
+library(purrr)
+library(ggplot2)
+library(hrbrthemes)
+library(lattice)
+library(plyr)
+library(scales)
+DT <- fread("WA_Fn-UseC_-Telco-Customer-Churn.csv")
+head(DT)
+```
+```{r}
+summary(DT)
+```
+```{r}
+str(DT)
+```
+
+```{r}
+fCols <- map_lgl(DT, is.character) %>% names(DT)[.] %>% .[-1]
+DT[, (fCols) := lapply(.SD, factor), .SDcols=fCols]
+nCols <- map_lgl(DT, is.numeric) %>% names(DT)[.]
+DT
+```
+```{r}
+DT[, SeniorCitizen := factor(SeniorCitizen)]
+with(DT, {cor(MonthlyCharges, TotalCharges, use = "pairwise.complete.obs")})
+h2o.init(nthreads = -1)
+y <- "TotalCharges"
+x <- setdiff(names(DT), c(y, "customerID"))
+
+```
+
+```{r}
+train <- DT[!is.na(TotalCharges)] %>% as.h2o()
+test <- DT[is.na(TotalCharges)] %>% as.h2o()
+
+dl.mod <- h2o.deeplearning(x, y, 
+                           model_id = "impute_TotalCharges",
+                           training_frame = train)
+
+preds <- h2o.predict(dl.mod, test)
+preds
+test
+```
+```{r}
+h2o.cbind(test["customerID"], preds)
+
+test$TotalCharges<-preds[,1]
+
+DT <- h2o.rbind(train, test) %>% as.data.table()
+summary(DT)
+
+```
+```{r}
+
+pmap(
+  list(col = c("tenure", "MonthlyCharges", "TotalCharges"),
+       fill = c("#EF6461", "#FFA736", "#93B5C6"),
+       title = c("Tenure has many 'zero' value counts as well as many high values",
+                 "Majority of customers have low monthly charges",
+                 "Right skewed distribution shows that majority of customers have low charges")),
+  function(col, fill, title) {
+    ggplot(DT, aes_string(col)) + 
+      geom_histogram(bins = 15, colour= "white", fill = fill) +
+      ggtitle(label = col, subtitle = title) 
+      
+  })
+```
+```{r}
+data <- as.h2o(DT)
+result <- lm(tenure ~ TotalCharges,DT)
+ggplot(DT, aes(x=TotalCharges,y=tenure))+geom_point()+stat_smooth(method = "lm",col="red")
+```
+
+
+```{r}
+tenure_group <- vector(mode="character",length = length(DT$tenure))
+tenure_group[DT$tenure<15] <- "<15"
+tenure_group[DT$tenure>=15 & DT$tenure<30] <- ">=15 and <30"
+tenure_group[DT$tenure>=30 & DT$tenure<45] <- ">=30 and <45"
+tenure_group[DT$tenure>=45 & DT$tenure<60] <- ">=45 and <60"
+tenure_group[DT$tenure>=60 & DT$tenure<75] <- ">=60 and <75"
+tenure_graph <- factor(tenure_group,levels = c("<15",">=15 and <30",">=30 and <45",">=45 and <60",">=60 and <75"),ordered = TRUE)
+churn <- table(DT$Churn,tenure_graph)
+contract <- table(DT$Contract,DT$PaymentMethod)
+counts <- table(DT$Contract,tenure_graph)
+barplot(counts,main = "Tenure vs Contract",xlab="Tenure",ylab="Counts",col=c("#0000FFFF","#0080FFFF","#00FFFFFF"),legend = rownames(counts),beside=TRUE,args.legend=list(x="top",title="Contract",cex= 0.75))
+churn
+contract
+```
+
+```{r}
+barplot(churn,main = "Tenure vs Churn",xlab="Tenure",ylab="Counts",col=terrain.colors(2),legend = rownames(churn),beside=TRUE,args.legend=list(x="top",title="Churn",cex= 0.75))
+```
+
+```{r}
+barplot(contract,main = "Payment Mode vs Type of Contract",xlab="Contract",ylab="Counts",col=terrain.colors(3),legend = rownames(contract),beside=TRUE,args.legend=list(x="topleft",title="Contract"))
+```
+
+```{r}
+j = count(DT, 'PaymentMethod')
+print(j)
+n<-length(DT$PaymentMethod)
+bp<- ggplot(j, aes(x="", y=freq, fill=PaymentMethod))+geom_bar(width = 1, stat = "identity")
+pie <- bp + coord_polar("y", start=0)+geom_text(aes(y = freq/n + c(0, cumsum(freq)[-length(freq)]), label = percent((freq)/n)), size=5)
+pie
+```
+```{r}
+splits <- h2o.splitFrame(data, ratios = c(0.6, 0.2), seed = 123)
+
+train <- splits[[1]]
+valid <- splits[[2]]
+test <- splits[[3]]
+
+# Baseline if Churn = 0 always
+nos <- test["Churn"] %>% as.data.table() %>% .[, .N, by=Churn] %>% .[,N] %>% .[2]
+nos
+
+```
+```{r}
+
+x <- setdiff(names(DT), c(y, "customerID"))
+y <- "Churn"
+x <- setdiff(names(DT), c(y, "customerID"))
+
+```
+
+
+
+```{r}
+gbm.mod <- h2o.gbm(x, y,
+                   training_frame = train,
+                   validation_frame = valid,
+                   nfolds = 5,
+                   seed = 123)
+gbm.cm <- h2o.confusionMatrix(gbm.mod, test)
+gbm.cm %>% knitr::kable()
+
+```
+
+```{r}
+perf <- h2o.performance(gbm.mod, valid)
+perf
+```
+
+
+``` {r}
+
+dl.mod <- h2o.deeplearning(x, y,
+                           training_frame = train,
+                           model_id = "DeepLearning_Model",
+                           validation_frame = valid,
+                           nfolds = 5,
+                           seed = 123)
+dl.cm <- h2o.confusionMatrix(dl.mod, test)
+dl.cm %>% knitr::kable()
+```
+```{r}
+perf<-h2o.performance(dl.mod)
+perf
+```
+```{r}
+Random_row<-DT[2:4,]
+Pred_this<-edit(Random_row)
+Pred_this<-as.h2o(Pred_this)
+pred <- h2o.predict(dl.mod, newdata=Pred_this)
+pred[1]
+
+```
+
