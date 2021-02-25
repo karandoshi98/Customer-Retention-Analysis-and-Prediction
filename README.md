@@ -14,6 +14,6 @@ Things I have done in the project -
 
 2. Performed Exploratory Data Analysis(EDA) to understand and find the important columns.
 
-3. Predicted for a new entry whether the customer will retain the service or not using Two models - Grdient boosting Algorithm and then Neural networks.
+3. Predicted for a new entry whether the customer will retain the service or not using Two models - Gradient boosting Algorithm and ANN.
 
 
